@@ -1,9 +1,11 @@
 # 评估配置与数据
 
-## 模型
+## 已有结果使用的模型
 
 - Baseline：[Quark MXFP8](https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP8)。
 - 对比模型：[Quark MXFP4](https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP4)。
+
+运行时通过 `.env` 的 `MODEL_PATH` 指定要评估的checkpoint。以上是已有结果的模型来源；每次运行评估一个指定模型，没有baseline前置要求或模型评估顺序。
 
 ## 配置
 

@@ -70,7 +70,7 @@ flowchart LR
 
 需要Linux x86_64、4张支持当前MXFP8/AITER路径的AMD GPU（gfx950）、Docker Engine/Compose，以及可容纳并发64任务的CPU、内存和磁盘。GPU编号通过 `GPU_IDS` 配置。
 
-可以直接使用已有的本地checkpoint，无需从上述Hugging Face仓库下载。在 `.env` 的 `MODEL_PATH` 中填写自己的checkpoint绝对路径，例如 `/data/models/my-minimax-checkpoint`，并设置对应的 `MODEL_FORMAT`（`mxfp8` 或 `mxfp4`）。模型链接标明结果表使用的checkpoint来源，复现相同模型的分数时才需要准备对应权重。
+在 `.env` 的 `MODEL_PATH` 中填写要评估的本地checkpoint绝对路径，例如 `/data/models/my-minimax-checkpoint`，并设置对应的 `MODEL_FORMAT`（用于结果标记和目录命名）。每次运行只评估指定的一个模型，无需先运行baseline或按量化格式依次评估。上面的模型链接说明已有结果使用的权重来源。
 
 默认服务脚本针对MiniMax-M3.1及上述量化格式配置。评估其他模型时，需要按其架构和硬件调整 [server.sh](scripts/server.sh) 的解析器、上下文、缓存及并行参数；固定环境不保证任意模型都兼容。
 
@@ -83,14 +83,6 @@ from pathlib import Path
 p = Path(".env")
 p.write_text(p.read_text().replace("/absolute/path/to/minimax-m3.1-deepswe", str(Path.cwd())))
 PY
-```
-
-可选：没有本地权重且希望使用结果表中的MXFP8模型时，在已有Hugging Face CLI环境中下载（需要权限时先运行 `hf auth login`），然后将 `MODEL_PATH` 指向下载目录：
-
-```bash
-hf download amd/MiniMax-M3.1-Flash-Quark-MXFP8 \
-  --revision refs/pr/1 \
-  --local-dir /data/models/MiniMax-M3.1-Flash-Quark-MXFP8
 ```
 
 编辑 `.env`：`REPO_DIR` 必须是本仓库的真实绝对路径，`MODEL_PATH` 必须存在，`SANDBOX_DATA_DIR` 使用专用大盘目录。不要指向其他实验的 Docker 数据根。配置 `GPU_IDS` 和未占用的 `SERVER_PORT`，检查控制网络、daemon 地址池及任务子网池不与已有网络冲突。
@@ -232,23 +224,21 @@ logs/deepswe/mini_<format>_attempts3/<trial>/
 
 通过轨迹检查agent执行，通过verifier日志检查测试失败原因。
 
-## 7. 切换 MXFP4 或停止任务
+## 7. 停止服务（可选）
 
-MXFP8 的339个trial完成后，停止本仓库的模型服务：
+评估完成后可以保留服务供后续使用。需要停止模型服务和Pier时执行：
 
 ```bash
 docker compose stop vllm
 ```
 
-将 `.env` 的 `MODEL_FORMAT` 改为 `mxfp4`、`MODEL_PATH` 改为 MXFP4 checkpoint，设置新的 `RUN_REL`，然后重新创建vLLM容器，让模型配置和Pier评估配置生效：
+需要停止并移除整个部署的容器和Compose网络时执行：
 
 ```bash
-docker compose up -d --force-recreate vllm
-docker compose exec vllm python scripts/preflight.py --output state/preflight-mxfp4.json
-docker compose exec -d vllm bash scripts/run_eval.sh
+docker compose down
 ```
 
-沙箱 daemon 可保留以复用镜像缓存。停止 `vllm` 会同时停止模型服务和Pier评估，之后检查专用 daemon 中遗留的任务容器；不要把中断结果报为完成。整个部署停止使用 `docker compose down`；该命令保留 bind-mounted 镜像数据和运行日志。不要对宿主机共享 daemon 或其他实验执行全局 prune。
+停止 `vllm` 会中断尚在运行的评估，之后可检查专用daemon中遗留的任务容器。以上命令保留挂载的镜像数据和运行日志。不要对宿主机共享daemon或其他实验执行全局prune。
 
 ## 补丁与参考
 
