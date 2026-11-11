@@ -1,6 +1,6 @@
 # MiniMax-M3.1-Flash DeepSWE 评估与复现
 
-记录 MiniMax-M3.1-Flash Quark MXFP8 / MXFP4 的最新 DeepSWE 全量三轮结果，并提供固定版本的 Docker 环境、补丁、服务命令、`--n-attempts 3` 全量评估命令和只读诊断脚本。本文以 **2026-11-11 复核的 Pier + mini-SWE、并发 64、512K 上下文、64K 输出**实验为准。
+提供可复现的 DeepSWE 评估环境：固定版本的 Docker 镜像、补丁、服务命令、`--n-attempts 3` 全量评估命令和只读诊断脚本。模型权重由使用者自行准备，通过 `MODEL_PATH` 指定；构建环境不会下载模型。仓库同时记录 MiniMax-M3.1-Flash Quark MXFP8 / MXFP4 的最新全量三轮结果，采用 **2026-11-11 复核的 Pier + mini-SWE、并发 64、512K 上下文、64K 输出**配置。
 
 ## 最新结果
 
@@ -70,16 +70,11 @@ flowchart LR
 
 需要Linux x86_64、4张支持当前MXFP8/AITER路径的AMD GPU（gfx950）、Docker Engine/Compose，以及可容纳并发64任务的CPU、内存和磁盘。GPU编号通过 `GPU_IDS` 配置。
 
-模型权重另行下载或使用已有 checkpoint，不写入 Git。在 `.env` 的 `MODEL_PATH` 中填写自己的 checkpoint 绝对路径，例如 `/data/models/MiniMax-M3.1-Flash-Quark-MXFP8`。
+可以直接使用已有的本地checkpoint，无需从上述Hugging Face仓库下载。在 `.env` 的 `MODEL_PATH` 中填写自己的checkpoint绝对路径，例如 `/data/models/my-minimax-checkpoint`，并设置对应的 `MODEL_FORMAT`（`mxfp8` 或 `mxfp4`）。模型链接标明结果表使用的checkpoint来源，复现相同模型的分数时才需要准备对应权重。
 
-从上述Hugging Face模型仓库准备checkpoint。以下命令下载MXFP8对应revision，需要模型仓库访问权限。
+默认服务脚本针对MiniMax-M3.1及上述量化格式配置。评估其他模型时，需要按其架构和硬件调整 [server.sh](scripts/server.sh) 的解析器、上下文、缓存及并行参数；固定环境不保证任意模型都兼容。
 
 ```bash
-# 在已有 Hugging Face CLI 环境中运行；需要登录时用 hf auth login。
-hf download amd/MiniMax-M3.1-Flash-Quark-MXFP8 \
-  --revision refs/pr/1 \
-  --local-dir /data/models/MiniMax-M3.1-Flash-Quark-MXFP8
-
 git clone https://github.com/wangjiaxin99/minimax-m3.1-deepswe.git
 cd minimax-m3.1-deepswe
 cp .env.example .env
@@ -88,6 +83,14 @@ from pathlib import Path
 p = Path(".env")
 p.write_text(p.read_text().replace("/absolute/path/to/minimax-m3.1-deepswe", str(Path.cwd())))
 PY
+```
+
+可选：没有本地权重且希望使用结果表中的MXFP8模型时，在已有Hugging Face CLI环境中下载（需要权限时先运行 `hf auth login`），然后将 `MODEL_PATH` 指向下载目录：
+
+```bash
+hf download amd/MiniMax-M3.1-Flash-Quark-MXFP8 \
+  --revision refs/pr/1 \
+  --local-dir /data/models/MiniMax-M3.1-Flash-Quark-MXFP8
 ```
 
 编辑 `.env`：`REPO_DIR` 必须是本仓库的真实绝对路径，`MODEL_PATH` 必须存在，`SANDBOX_DATA_DIR` 使用专用大盘目录。不要指向其他实验的 Docker 数据根。配置 `GPU_IDS` 和未占用的 `SERVER_PORT`，检查控制网络、daemon 地址池及任务子网池不与已有网络冲突。

@@ -30,6 +30,8 @@ vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c4392
 
 [001-vllm-quark-mxfp8.patch](../patches/001-vllm-quark-mxfp8.patch)来自[vLLM PR #63125](https://github.com/vllm-project/vllm/pull/63125)。增加 `QuarkW8A8Mxfp8MoEMethod`，支持MXFP8专家权重及scale加载，并接入AITER MXFP8 MoE推理路径。MXFP4使用已有的 `QuarkOCP_MX_MoEMethod`。
 
+仓库保存该PR的固定diff，并记录补丁SHA256。Dockerfile通过 [apply_vllm_patch.py](../scripts/apply_vllm_patch.py) 只应用其中 `quark_moe.py` 的运行时代码；PR中的测试文件不写入安装环境。这样可以在固定ROCm镜像上补齐MXFP8支持，保留镜像内其他vLLM代码及依赖。补丁应用前后均校验源码SHA256，代码版本不匹配时构建会失败。
+
 Dockerfile应用 `quark_moe.py` 的运行时改动，并校验源码SHA256：
 
 | 状态 | SHA256 |
