@@ -127,14 +127,14 @@ preflight 检查 `/health`、模型 ID，并执行 100-token 固定问题冒烟�
 
 模型服务参数如下：
 
-| 服务参数 | 配置 |
-|---|---|
-| TP / GPU | `--tensor-parallel-size 4`；由 `GPU_IDS` 选择4张卡 |
-| 上下文 | `--max-model-len 524288` |
-| KV / indexer cache | `nvfp4`，与 MXFP8/MXFP4 模型权重格式分别配置 |
-| MoE | `--moe-backend aiter`，AITER MoE 开启 |
-| MiniMax 输出解析 | `--tool-call-parser minimax_m3`、`--reasoning-parser minimax_m3`、自动 tool choice |
-| 其他 | block size 128，关闭 hybrid KV cache manager，关闭 shared-expert fusion |
+| 服务参数 | 配置 | 来源 / 取值依据 |
+|---|---|---|
+| TP / GPU | `--tensor-parallel-size 4`；`GPU_IDS`选择4张卡 | 本次硬件配置；接口见[S6](docs/references.md#s6) |
+| 上下文 | `--max-model-len 524288` | MiniMax模型卡披露512K，本仓库按524288配置；[S2](docs/references.md#s2) |
+| KV / indexer cache | `nvfp4` | 本次服务配置；[S6](docs/references.md#s6) |
+| MoE | `--moe-backend aiter`，AITER MoE开启 | 本次ROCm部署；MXFP8支持来自vLLM PR #63125；[S6](docs/references.md#s6) |
+| MiniMax输出解析 | `minimax_m3`工具/reasoning解析器、自动tool choice | 本次模型接口配置；[S6](docs/references.md#s6) |
+| 其他 | block size128，关闭hybrid KV cache manager及shared-expert fusion，开启indexer decode CP | 本次服务配置；完整命令与接口见[S6](docs/references.md#s6) |
 
 完整命令见 [server.sh](scripts/server.sh)。
 
@@ -189,22 +189,27 @@ docker compose exec vllm bash -c 'python scripts/summarize.py --manifest "$REPO_
 
 完整原生评估命令在 [eval_deepswe.sh](scripts/eval_deepswe.sh)，配置如下：
 
-| 参数 | 值及语义 |
-|---|---|
-| agent | mini-SWE-agent 2.4.5 |
-| agent 内额外包 | `litellm[mcp]==1.108.3`、`mcp==2.3.0`；与 Pier 控制器依赖是两套环境 |
-| 模型客户端 | `model_class=litellm_response`，原生 Responses API |
-| 并发 | `--n-concurrent 64` |
-| 正式 attempt | `--n-attempts 3`，113题×3次，共339个trial；共用并发64调度队列 |
-| 框架重试 | `--max-retries 2`，处理可重试异常 |
-| 输出 | `max_output_tokens=65536`，包含reasoning |
-| 采样 | temperature 1、top_p 0.95、reasoning_effort max |
-| cost limit | 0，关闭 agent 的费用预算限制；仍有时间/上下文限制 |
-| agent setup multiplier | 5，setup预算 1800 秒 |
-| agent/verifier multiplier | 均为 1，使用任务预算： 10800 / 1800 秒 |
-| 清理 | `--no-delete`，结束时普通任务容器/网络会清理，镜像/卷保留 |
+| 参数 | 值及语义 | 来源 / 取值依据 |
+|---|---|---|
+| 框架 / agent | Pier 0.3.1 + mini-SWE-agent 2.4.5 | DeepSWE推荐Pier + mini-SWE；MiniMax披露agent 2.4.5；[S1](docs/references.md#s1)、[S2](docs/references.md#s2) |
+| agent内额外包 | `litellm[mcp]==1.108.3`、`mcp==2.3.0` | 本仓库固定依赖；安装接口见[S4](docs/references.md#s4) |
+| 模型客户端 | `model_class=litellm_response`，Responses API | 与Pier对 `openai/` 的默认选择一致；[S4](docs/references.md#s4)、[S5](docs/references.md#s5) |
+| 模型API | `openai/${MODEL_PATH}`、本地 `api_base`、`api_key=EMPTY`、`drop_params=False`；通过 `--ae`传递API地址 | 本次本地服务接入，占位key；模型参数与环境变量接口见[S4](docs/references.md#s4)、[S5](docs/references.md#s5) |
+| 环境 / 任务 | Docker；固定113题commit | 题库来自官方；Docker部署为本次设置，官方排行榜使用Modal；[S1](docs/references.md#s1) |
+| 并发 | `--n-concurrent 64` | 本次吞吐配置；Pier默认4；[S4](docs/references.md#s4) |
+| 正式attempt | `--n-attempts 3`，113×3=339次 | 本次为3次；对齐DeepSWE官方排行榜应采用4次、共452次；NVIDIA另有3次示例；[S3](docs/references.md#s3) |
+| 框架重试 | `--max-retries 2`，处理可重试异常 | 本次设置，Pier默认0；NVIDIA也有两次基础设施重试示例；[S3](docs/references.md#s3)、[S4](docs/references.md#s4) |
+| 单响应输出 | `max_output_tokens=65536`，包含reasoning | 本次输出预算，MiniMax未披露DeepSWE该取值；[S2](docs/references.md#s2)、[S5](docs/references.md#s5) |
+| 采样 | temperature1、top_p0.95 | MiniMax通用采样建议；[S2](docs/references.md#s2) |
+| 推理档位 | `reasoning_effort=max` | 本次设置；MiniMax列出max档位但未披露DeepSWE所用档位；[S2](docs/references.md#s2) |
+| cost limit | 0，关闭费用限制 | 与Pier接入默认值一致；[S4](docs/references.md#s4)、[S5](docs/references.md#s5) |
+| agent setup multiplier | 5，360×5=1800秒 | 本次安装预算；360秒基数来自Pier；[S4](docs/references.md#s4) |
+| agent/verifier multiplier | 均为1；10800 / 1800秒 | 保留官方任务预算；[S1](docs/references.md#s1) |
+| 工具命令超时 | 默认30秒，未覆盖 | mini-SWE默认值；[S5](docs/references.md#s5) |
+| 清理 | `--no-delete`，保留镜像及卷 | 本次缓存策略；清理语义见[S4](docs/references.md#s4) |
+| 输出目录 | `--jobs-dir logs/deepswe`、`--job-name mini_${MODEL_FORMAT}_attempts3` | 本仓库目录约定；CLI接口见[S4](docs/references.md#s4) |
 
-评估使用 `--n-attempts 3`、`--n-concurrent 64` 和 `--no-delete`。官方框架参考见 [参考来源](docs/references.md)。
+**DeepSWE官方v1.1排行榜采用四次完整运行；对齐该轮数应使用 `--n-attempts 4`，113×4=452次。本仓库已有结果及当前脚本采用三次、共339次。** 官方运行说明未将四次写成所有本地评估的强制要求，此处注明的是排行榜采用的轮数。选择mini-SWE及版本2.4.5有官方依据；其他标为“本次设置”的参数不能视为MiniMax官方完整配置。来源详情见 [参数参考来源](docs/references.md)。
 
 ## 6. verifier、轨迹和异常检查
 

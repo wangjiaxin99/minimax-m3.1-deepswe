@@ -11,6 +11,8 @@
 
 Pier 0.3.1 + mini-SWE-agent 2.4.5；TP4；上下文524288；输出65536；并发64；每题3次attempt；max-retries=2；reasoning_effort=max；temperature=1；top_p=0.95；NVFP4 KV/indexer cache。
 
+参数逐项来源见 [README配置表](../README.md#5-单个-job-全量运行三次-attempt)及 [参数参考来源](references.md)。mini-SWE-agent 2.4.5和512K上下文来自MiniMax官方模型卡；temperature/top_p来自其通用建议。DeepSWE官方v1.1排行榜采用4次完整运行、计划452次；本仓库当前采用3次、共339次，其余本次服务和预算设置均在来源表中单独标明。
+
 ## 数据
 
 - [最新结果JSON](../data/latest-results.json)：每个模型、每轮得分、耗时和逐题诊断。
