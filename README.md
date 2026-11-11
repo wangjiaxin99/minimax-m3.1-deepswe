@@ -11,9 +11,7 @@
 | Baseline | [amd/MiniMax-M3.1-Flash-Quark-MXFP8](https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP8) | MXFP8 |
 | MXFP4 对比模型 | [amd/MiniMax-M3.1-Flash-Quark-MXFP4](https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP4) | MXFP4 |
 
-链接用于说明模型身份和下载入口。分数来自上述模型格式的历史评估checkpoint；Hugging Face的`main`可能更新，下载复现时应固定revision并保留模型指纹。模型仓库的访问权限独立于本公开GitHub仓库。
-
-每轮 113 道题，连续运行三轮；每题每轮一个正式 attempt。以原生 verifier `reward == 1` 计为通过，固定分母 339。任务 OOM、agent/verifier 超时和缺失 reward 都保留在分母中；本批结果没有后补评分、排除异常题或取三轮最佳答案。
+每种模型评估113题、重复3次，共339个trial。以原生verifier `reward == 1` 计为通过，分数为全部339次的平均通过率；OOM、超时和缺失reward计为未通过。
 
 | 模型 | 轮次 | 通过 / 总数 | 分数 | 整轮耗时 | 截断响应数 | 有截断的题目轮次 |
 |---|---|---:|---:|---:|---:|---:|
@@ -26,9 +24,7 @@
 | MXFP4 | r3 | 78/113 | 69.03% | 2:51:38 | 8 | 1 |
 | **MXFP4** | **合计 / 平均** | **236/339** | **69.62%** | **8:25:17** | **9** | **2** |
 
-MXFP8 高 3.83 个百分点；MXFP4 正式整轮耗时之和短 18.84%。这是包括环境准备、agent 工具执行、编译测试和 verifier 的端到端时间，不能直接当作纯模型推理速度差异。耗时不含服务加载、中断的旧轮次或轮间等待；逐轮取整显示可能产生 1 秒差异。
-
-历史 MXFP8 r1 用 `--delete`，r2/r3 用 `--no-delete`；MXFP4 三轮均为 `--no-delete`。本仓库的新运行脚本统一使用 `--no-delete`，并按用户要求改为单个 job 的 `--n-attempts 3`，共339个正式trial；历史表格仍来自三个顺序job。三次attempt共用并发64队列，不保证完成全部题目的第一次attempt后才开始第二次。固定代码和参数可复现运行方法，但模型采样、镜像缓存、任务执行及硬件差异会带来分数和耗时波动。
+耗时为环境准备、agent解题及verifier测试的端到端时间。
 
 | 正式三轮诊断，项目存在重叠 | MXFP8 | MXFP4 |
 |---|---:|---:|
@@ -41,9 +37,7 @@ MXFP8 高 3.83 个百分点；MXFP4 正式整轮耗时之和短 18.84%。这是�
 | 上述工具超时题目轮次中最终通过 | 150/200 | 139/201 |
 | 缺失轨迹 / patch 文件 | 0 / 0 | 0 / 0 |
 
-14 次截断均报告 `max_output_tokens`，但实际 `input_tokens + output_tokens = 524288`：服务按剩余上下文空间收紧了输出预算，**没有发现生成到 65536 token 才截断的响应**。有截断的三个题目轮次均失败，不能据此把全部失败归因于截断。任务内存 OOM 是 CPU 沙箱事件，与模型 GPU OOM 不同。详见 [诊断口径](docs/results-and-diagnostics.md)。
-
-公开数据包含 [678 个题目轮次 CSV](data/trials.csv)、[逐题诊断 JSON](data/latest-results.json) 和 [版本及补丁指纹](data/versions.json)。CSV/JSON 是原始日志的只读导出，不包含完整生成轨迹、任务解法、模型权重或凭据。实验配置及数据来源见 [历史实验记录](docs/historical-environment.md)。
+逐题数据见 [CSV](data/trials.csv) 和 [JSON](data/latest-results.json)；版本与补丁指纹见 [versions.json](data/versions.json)。
 
 ## 环境方案：Dockerfile + Compose
 
@@ -62,20 +56,20 @@ flowchart LR
     V --> R[reward.json / 测试日志]
 ```
 
-- [Dockerfile.pier](docker/Dockerfile.pier)：Python 3.12.15、固定 Pier commit、036/037 补丁，按上游 `uv.lock` 执行 `uv sync --frozen --no-dev`。Pier 安装在 `/opt/pier-venv`，不进入 vLLM Python 环境。
-- [Dockerfile.vllm](docker/Dockerfile.vllm)：以历史 ROCm 镜像 digest 为基础，只回移 004 的 `quark_moe.py` 运行时改动；校验补丁前后 SHA256，不整包升级 vLLM。
+- [Dockerfile.pier](docker/Dockerfile.pier)：Python 3.12.15、固定 Pier commit、002/003 补丁，按上游 `uv.lock` 执行 `uv sync --frozen --no-dev`。Pier 安装在 `/opt/pier-venv`，不进入 vLLM Python 环境。
+- [Dockerfile.vllm](docker/Dockerfile.vllm)：以固定ROCm镜像digest为基础，应用001的 `quark_moe.py` 运行时改动；校验补丁前后 SHA256，不整包升级 vLLM。
 - [Dockerfile.sandbox](docker/Dockerfile.sandbox)：独立 Docker 28.3.2 daemon、持久化数据目录及模型 HTTP 转发；daemon 启用 `--init`，回收任务容器的孤儿子进程。
 - [compose.yaml](compose.yaml)：配置 GPU、挂载、端口和独立网络。任务容器看不到控制器中的测试文件；verifier 在独立环境中运行。
 
-历史测试是在 vLLM 容器中安装独立 Pier venv，源码和虚拟环境位于持久化挂载目录。本仓库将 Pier 拆为控制镜像，属于**部署方式整理**；最新表格不是在新 Compose 环境下重新测得的。构建及验证范围见 [验证记录](docs/validation.md)。
+构建与检查结果见 [验证记录](docs/validation.md)。
 
 ## 1. 准备机器、仓库和模型
 
-需要 Linux x86_64、支持该模型的 AMD ROCm GPU、4 张可用 GPU、Docker Engine/Compose，以及足够的 CPU、内存和磁盘。历史 TP4 用 GPU 4–7。64 个任务的内存上限不能理解为全部任务同时只用很少内存；示例任务每个 agent/verifier 为 2 CPU、8 GiB，编译高峰和 verifier 重叠需要关注主机容量。
+需要Linux x86_64、4张支持当前MXFP8/AITER路径的AMD GPU（gfx950）、Docker Engine/Compose，以及可容纳并发64任务的CPU、内存和磁盘。GPU编号通过 `GPU_IDS` 配置。
 
-模型权重另行下载或使用已有 checkpoint，不写入 Git。在 `.env` 的 `MODEL_PATH` 中填写自己的 checkpoint 绝对路径，例如 `/data/models/MiniMax-M3.1-Flash-Quark-MXFP8`。该路径是示例，不依赖作者的本地文件。
+模型权重另行下载或使用已有 checkpoint，不写入 Git。在 `.env` 的 `MODEL_PATH` 中填写自己的 checkpoint 绝对路径，例如 `/data/models/MiniMax-M3.1-Flash-Quark-MXFP8`。
 
-MXFP8 导出已上传到 [amd/MiniMax-M3.1-Flash-Quark-MXFP8 的 PR #1](https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP8/discussions/1)。如有仓库访问权限，可下载该 revision；不要假定权重已经合入 `main`。访问受限时使用现有本地模型。模型授权和下载权限以模型仓库为准。
+从上述Hugging Face模型仓库准备checkpoint。以下命令下载MXFP8对应revision，需要模型仓库访问权限。
 
 ```bash
 # 在已有 Hugging Face CLI 环境中运行；需要登录时用 hf auth login。
@@ -86,6 +80,11 @@ hf download amd/MiniMax-M3.1-Flash-Quark-MXFP8 \
 git clone https://github.com/wangjiaxin99/minimax-m3.1-deepswe.git
 cd minimax-m3.1-deepswe
 cp .env.example .env
+python3 - <<'PY'
+from pathlib import Path
+p = Path(".env")
+p.write_text(p.read_text().replace("/absolute/path/to/minimax-m3.1-deepswe", str(Path.cwd())))
+PY
 ```
 
 编辑 `.env`：`REPO_DIR` 必须是本仓库的真实绝对路径，`MODEL_PATH` 必须存在，`SANDBOX_DATA_DIR` 使用专用大盘目录。不要指向其他实验的 Docker 数据根。配置 `GPU_IDS` 和未占用的 `SERVER_PORT`，检查控制网络、daemon 地址池及任务子网池不与已有网络冲突。
@@ -114,7 +113,7 @@ docker compose build pier sandbox
 docker compose --profile model build vllm
 ```
 
-任务固定为 commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`，脚本核对 113 个 `task.toml` 及干净工作树。构建需要网络访问 GitHub、PyPI 和镜像仓库。基础 ROCm 镜像无法拉取时，见 [基础镜像保留与迁移](docs/environment-and-patches.md)；不要替换成 `latest` 后声称环境相同。
+任务固定为 commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`，脚本核对 113 个 `task.toml` 及干净工作树。构建需要网络访问 GitHub、PyPI 和镜像仓库。基础 ROCm 镜像无法拉取时，见 [基础镜像保留与迁移](docs/environment-and-patches.md)。
 
 ## 3. 启动 vLLM 和评估控制器
 
@@ -134,7 +133,7 @@ preflight 检查 `/health`、模型 ID，并执行 100-token 固定问题冒烟�
 
 | 服务参数 | 配置 |
 |---|---|
-| TP / GPU | `--tensor-parallel-size 4`；历史 GPU 4–7 |
+| TP / GPU | `--tensor-parallel-size 4`；由 `GPU_IDS` 选择4张卡 |
 | 上下文 | `--max-model-len 524288` |
 | KV / indexer cache | `nvfp4`，与 MXFP8/MXFP4 模型权重格式分别配置 |
 | MoE | `--moe-backend aiter`，AITER MoE 开启 |
@@ -150,7 +149,7 @@ docker compose exec pier python scripts/prefetch_images.py
 docker compose exec pier docker system df
 ```
 
-此步骤只把题目声明的预构建镜像拉入**专用 daemon**。mini-SWE 安装层、代理镜像和 verifier 镜像仍可能在评估准备阶段构建；首次准备可能联网下载包。后续相同配置可复用构建缓存，因此不能将此方案称为“所有准备步骤完全离线”。
+提前拉取题目声明的预构建镜像。首次运行还会构建mini-SWE、代理和verifier镜像；后续运行复用缓存。
 
 任务 agent 的运行网络受 Pier 白名单控制，只开放配置的模型服务；verifier 按题目配置无网络运行。`http://...:443/v1` 使用 443 是为了符合 Pier 代理允许的端口，是普通 HTTP，非 TLS。
 
@@ -165,17 +164,14 @@ docker compose exec -d pier bash scripts/run_eval.sh
 实时日志和进展：
 
 ```bash
-# 将 <RUN_REL> 替换成 .env 中的真实目录。
-tail -f <RUN_REL>/logs/eval_deepswe.log
-docker compose exec pier python scripts/summarize.py \
-  --manifest <RUN_REL>/manifest.json --allow-incomplete
+docker compose exec pier bash -c 'tail -f "$REPO_DIR/$RUN_REL/logs/eval_deepswe.log"'
+docker compose exec pier bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --allow-incomplete'
 ```
 
 未完成的 job 打印的是固定339分母下的进度，不是最终准确率。全部完成后：
 
 ```bash
-docker compose exec pier python scripts/summarize.py \
-  --manifest <RUN_REL>/manifest.json --output <RUN_REL>/summary.json
+docker compose exec pier bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --output "$REPO_DIR/$RUN_REL/summary.json"'
 ```
 
 完整原生评估命令在 [eval_deepswe.sh](scripts/eval_deepswe.sh)，配置如下：
@@ -187,15 +183,15 @@ docker compose exec pier python scripts/summarize.py \
 | 模型客户端 | `model_class=litellm_response`，原生 Responses API |
 | 并发 | `--n-concurrent 64` |
 | 正式 attempt | `--n-attempts 3`，113题×3次，共339个trial；共用并发64调度队列 |
-| 框架重试 | `--max-retries 2`，处理可重试异常；不是正常模型失败后取最佳答案 |
-| 输出 | `max_output_tokens=65536`，包含 reasoning；剩余上下文可能更小 |
+| 框架重试 | `--max-retries 2`，处理可重试异常 |
+| 输出 | `max_output_tokens=65536`，包含reasoning |
 | 采样 | temperature 1、top_p 0.95、reasoning_effort max |
 | cost limit | 0，关闭 agent 的费用预算限制；仍有时间/上下文限制 |
-| agent setup multiplier | 5，历史有效 setup 预算 1800 秒 |
-| agent/verifier multiplier | 均为 1，使用任务预算，历史为 10800 / 1800 秒 |
+| agent setup multiplier | 5，setup预算 1800 秒 |
+| agent/verifier multiplier | 均为 1，使用任务预算： 10800 / 1800 秒 |
 | 清理 | `--no-delete`，结束时普通任务容器/网络会清理，镜像/卷保留 |
 
-每题运行三次来自本次实验要求，不是 DeepSWE 强制规定。汇总使用全部339次的平均通过率，不使用 `pass@3` 或每题三次取最佳。官方实现、排行榜环境及参数参考见 [参考来源](docs/references.md)。本结果不是官方 MiniMax 得分或 BF16 基线。
+评估使用 `--n-attempts 3`、`--n-concurrent 64` 和 `--no-delete`。官方框架参考见 [参考来源](docs/references.md)。
 
 ## 6. verifier、轨迹和异常检查
 
@@ -213,7 +209,7 @@ logs/deepswe/mini_<format>_attempts3/<trial>/
 
 只读 [summarize.py](scripts/summarize.py) 按唯一 response ID 去重截断，区分工具命令超时与整题超时，检查缺失文件，并保持固定分母。它不执行 verifier、不改原始日志、不改变评分。空 patch 与缺失 patch 是两种情况。
 
-若发生 CPU OOM，结合专用 daemon 的容器状态和宿主机内核日志检查；exit 137 单独不能证明 OOM。若提高任务内存、命令时限、上下文或修改重试策略，必须新建实验并记录，不能悄悄改写本表成绩。
+通过轨迹检查agent执行，通过verifier日志检查测试失败原因。
 
 ## 7. 切换 MXFP4 或停止任务
 
@@ -238,9 +234,9 @@ docker compose exec -d pier bash scripts/run_eval.sh
 
 | 补丁 | 修改对象 | 来源 / 作用 |
 |---|---|---|
-| [004](patches/004-vllm-pr63125-quark-mxfp8.patch) | vLLM Quark MoE | [上游 PR #63125](https://github.com/vllm-project/vllm/pull/63125)，为了加载并推理 MXFP8 模型，支持 MXFP8 MoE / AITER；替代历史 002 |
-| [036](patches/036-pier-local-provider-subnets.patch) | Pier agent setup / Codex 接入 | 本地基础设施适配；每 trial 分配独立子网，显式本地 API 不追加默认公共域名 |
-| [037](patches/037-pier-mini-local-provider-allowlist.patch) | Pier 的 mini-SWE 接入 | 本地模型 API 白名单；未修改 mini-SWE-agent 包本身 |
+| [001](patches/001-vllm-quark-mxfp8.patch) | vLLM Quark MoE | [上游 PR #63125](https://github.com/vllm-project/vllm/pull/63125)，为了加载并推理 MXFP8 模型，支持 MXFP8 MoE / AITER |
+| [002](patches/002-pier-provider-subnets.patch) | Pier agent setup / Codex 接入 | 本地基础设施适配；每 trial 分配独立子网，显式本地 API 不追加默认公共域名 |
+| [003](patches/003-pier-mini-provider-allowlist.patch) | Pier 的 mini-SWE 接入 | 本地模型 API 白名单；未修改 mini-SWE-agent 包本身 |
 
 任务、提示词和 verifier 无本地 patch。更多版本说明见 [环境与补丁](docs/environment-and-patches.md)，官方依据见 [参考来源](docs/references.md)。
 

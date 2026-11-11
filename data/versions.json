@@ -19,9 +19,9 @@
   "base_repo_digest": "vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c439231f6475f74569",
   "historical_image_id": "sha256:1d3dac5bca7b1b80983ec0bf4675d1b9feff74a1d683838ade67d06d35c26877",
   "patch_sha256": {
-    "037-pier-mini-local-provider-allowlist.patch": "ee7188a4afeeb7ef7f6bb936119ab114f6b22a14771c150e9ab3e24847585362",
-    "004-vllm-pr63125-quark-mxfp8.patch": "63eb58ed5be1b8c59911553da78e20932b01fb94e3da62db8c98b2163c46377c",
-    "036-pier-local-provider-subnets.patch": "a514ea7f5b9f2ea3e701cdaad8ddceb6d8d274fefcbab8d1e8cd3bfac631f7b0"
+    "003-pier-mini-provider-allowlist.patch": "ee7188a4afeeb7ef7f6bb936119ab114f6b22a14771c150e9ab3e24847585362",
+    "001-vllm-quark-mxfp8.patch": "63eb58ed5be1b8c59911553da78e20932b01fb94e3da62db8c98b2163c46377c",
+    "002-pier-provider-subnets.patch": "a514ea7f5b9f2ea3e701cdaad8ddceb6d8d274fefcbab8d1e8cd3bfac631f7b0"
   },
   "quark_moe_runtime_sha256": "3f3397675af6596964daf974ee3b22d10996d0ebc70a4c3b30cad0e78f8ac830",
   "reproduction_base_images": {
