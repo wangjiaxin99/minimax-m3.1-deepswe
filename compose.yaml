@@ -1,0 +1,92 @@
+name: minimax-deepswe-repro
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sandbox
+    image: minimax-deepswe-sandbox:28.3.2
+    privileged: true
+    init: true
+    restart: unless-stopped
+    environment:
+      REPO_DIR: ${REPO_DIR:?Set REPO_DIR in .env}
+      SANDBOX_IP: ${SANDBOX_IP:-172.30.0.2}
+      CONTROL_GATEWAY: ${CONTROL_GATEWAY:-172.30.0.1}
+      SERVER_PORT: ${SERVER_PORT:-8201}
+      DAEMON_BRIDGE: ${DAEMON_BRIDGE:-172.31.0.1/16}
+      DAEMON_ADDRESS_POOL: ${DAEMON_ADDRESS_POOL:-172.28.0.0/16}
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ${REPO_DIR}:${REPO_DIR}
+      - ${SANDBOX_DATA_DIR:?Set SANDBOX_DATA_DIR in .env}:/var/lib/docker
+    networks:
+      control:
+        ipv4_address: ${SANDBOX_IP:-172.30.0.2}
+    healthcheck:
+      test: [CMD-SHELL, 'docker -H "unix://$$REPO_DIR/state/docker.sock" info >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  pier:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pier
+    image: minimax-deepswe-pier:0.3.1
+    init: true
+    working_dir: ${REPO_DIR}
+    environment:
+      REPO_DIR: ${REPO_DIR}
+      MODEL_PATH: ${MODEL_PATH:?Set MODEL_PATH in .env}
+      MODEL_FORMAT: ${MODEL_FORMAT:-mxfp8}
+      RUN_REL: ${RUN_REL:?Set a fresh RUN_REL in .env}
+      DOCKER_HOST: unix://${REPO_DIR}/state/docker.sock
+      TASKS_DIR: ${REPO_DIR}/vendor/deep-swe/tasks
+      PIER_DOCKER_SUBNET_POOL: ${TASK_SUBNET_POOL:-198.18.0.0/15}
+      PIER_DOCKER_SUBNET_STATE: ${REPO_DIR}/state/subnets.json
+      OPENAI_BASE_URL: http://${SANDBOX_IP:-172.30.0.2}:443/v1
+      OPENAI_API_KEY: EMPTY
+    volumes:
+      - ${REPO_DIR}:${REPO_DIR}
+    depends_on:
+      sandbox:
+        condition: service_healthy
+    networks: [control]
+  vllm:
+    profiles: [model]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.vllm
+      args:
+        VLLM_BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c439231f6475f74569}
+    image: minimax-deepswe-vllm:pr63125
+    init: true
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp:unconfined
+      - label:disable
+    group_add: [video]
+    working_dir: ${REPO_DIR}
+    environment:
+      MODEL_PATH: ${MODEL_PATH}
+      HIP_VISIBLE_DEVICES: ${GPU_IDS:-4,5,6,7}
+      REPO_DIR: ${REPO_DIR}
+      RUN_REL: ${RUN_REL}
+    volumes:
+      - ${REPO_DIR}:${REPO_DIR}
+      - ${MODEL_PATH}:${MODEL_PATH}:ro
+    ports:
+      - ${SERVER_PORT:-8201}:8000
+    command:
+      - -lc
+      - 'mkdir -p "$$REPO_DIR/$$RUN_REL/logs"; test ! -e "$$REPO_DIR/$$RUN_REL/logs/server.log" && exec bash "$$REPO_DIR/scripts/server.sh" > "$$REPO_DIR/$$RUN_REL/logs/server.log" 2>&1'
+    networks: [control]
+networks:
+  control:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${CONTROL_SUBNET:-172.30.0.0/24}
+          gateway: ${CONTROL_GATEWAY:-172.30.0.1}

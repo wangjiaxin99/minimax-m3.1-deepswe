@@ -1,0 +1,9 @@
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c439231f6475f74569
+FROM ${VLLM_BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
+COPY patches/004-vllm-pr63125-quark-mxfp8.patch /opt/repro/patches/
+COPY scripts/apply_vllm_patch.py /opt/repro/
+RUN python /opt/repro/apply_vllm_patch.py --patch /opt/repro/patches/004-vllm-pr63125-quark-mxfp8.patch
+ENTRYPOINT ["/bin/bash"]
+CMD ["-lc", "sleep infinity"]

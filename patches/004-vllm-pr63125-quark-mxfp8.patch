@@ -1,0 +1,583 @@
+diff --git a/tests/quantization/test_quark.py b/tests/quantization/test_quark.py
+index 9ec0bb78d26c..2e12b315fcf3 100644
+--- a/tests/quantization/test_quark.py
++++ b/tests/quantization/test_quark.py
+@@ -57,10 +57,12 @@
+ )
+ from vllm.model_executor.layers.quantization.quark.quark_moe import (  # noqa: E501
+     QuarkMoEMethod,
++    QuarkOCP_MX_MoEMethod,
+     QuarkW4A8Fp8MoEMethod,
+     QuarkW4A16Int4MoEMethod,
+     QuarkW8A8Fp8MoEMethod,
+     QuarkW8A8Int8MoEMethod,
++    QuarkW8A8Mxfp8MoEMethod,
+ )
+ from vllm.model_executor.layers.quantization.quark.schemes import (
+     QuarkScheme,
+@@ -98,6 +100,8 @@
+     kMxfp6E2M3Static,
+     kMxfp6E3M2Dynamic,
+     kMxfp6E3M2Static,
++    kMxfp8Dynamic,
++    kMxfp8Static,
+     kNvfp4Dynamic,
+     kNvfp4Static,
+ )
+@@ -146,6 +150,9 @@ class QTensorConfig:
+     act_quant_key: QuantKey | None = None
+     dispatch_cls: type[QuarkScheme] | type[QuarkMoEMethod] | None = None
+     expected_error: tuple[type[Exception], str] | None = None
++    # Layer type the `expected_error` case is exercised on: "linear" (the
++    # default, used by the FP8 per-block cases) or "experts".
++    expected_error_on: str = "linear"
+ 
+ 
+ QTENSOR_CONFIGS = [
+@@ -601,6 +608,50 @@ class QTensorConfig:
+         act_quant_key=kMxfp6E2M3Dynamic,
+         dispatch_cls=QuarkOCP_MX,
+     ),
++    QTensorConfig(
++        name="ocp_mx_mxfp8_activation",
++        # MXFP8 (W8A8) has its own MoE method: the OCP MX method only handles
++        # MXFP4/MXFP6 elements.
++        weight={
++            "dtype": "fp8_e4m3",
++            "qscheme": "per_group",
++            "group_size": 32,
++            "scale_format": "e8m0",
++            "is_dynamic": False,
++        },
++        input_tensors={
++            "dtype": "fp8_e4m3",
++            "qscheme": "per_group",
++            "group_size": 32,
++            "scale_format": "e8m0",
++            "is_dynamic": True,
++        },
++        weight_quant_key=kMxfp8Static,
++        act_quant_key=kMxfp8Dynamic,
++        dispatch_cls=QuarkW8A8Mxfp8MoEMethod,
++    ),
++    QTensorConfig(
++        name="ocp_mx_mxfp8_per_block_experts",
++        # Shape B (32x32 per-block e8m0) is served by QuarkOCP_MX for Linears but
++        # is not a spelling the MXFP8 MoE method can load.
++        weight={
++            "dtype": "fp8_e4m3",
++            "qscheme": "per_block",
++            "block_size": [32, 32],
++            "symmetric": True,
++            "is_dynamic": False,
++            "scale_type": "float8_e8m0fnu",
++        },
++        input_tensors={
++            "dtype": "fp8_e4m3",
++            "qscheme": "per_group",
++            "group_size": 32,
++            "scale_format": "e8m0",
++            "is_dynamic": True,
++        },
++        expected_error=(NotImplementedError, "1-D per_group"),
++        expected_error_on="experts",
++    ),
+     QTensorConfig(
+         name="nvfp4",
+         weight=[
+@@ -892,8 +943,12 @@ def test_quant_method_dispatch_target(case):
+     config = _make_qtensor_config(case.weight, case.input_tensors)
+     if case.expected_error is not None:
+         error_type, error_message = case.expected_error
++        on_experts = case.expected_error_on == "experts"
+         with pytest.raises(error_type, match=error_message):
+-            config.get_quant_method_target("linear", LinearBase)
++            config.get_quant_method_target(
++                "experts" if on_experts else "linear",
++                RoutedExperts if on_experts else LinearBase,
++            )
+         return
+ 
+     assert case.dispatch_cls is not None
+@@ -1048,44 +1103,122 @@ def __init__(self):
+     assert linear.scheme.scale_block_rows == 1
+ 
+ 
+-def test_quant_method_dispatch_mxfp8_moe_raises(default_vllm_config):
+-    """MXFP8 in a MoE config raises ValueError — experts are unsupported."""
+-    from vllm.model_executor.layers.quantization.quark.quark_moe import (
+-        QuarkOCP_MX_MoEMethod,
++_MXFP8_MOE_SPEC = {
++    "weight": {
++        "dtype": "fp8_e4m3",
++        "qscheme": "per_group",
++        "group_size": 32,
++        "scale_format": "e8m0",
++        "is_dynamic": False,
++    },
++    "input_tensors": {
++        "dtype": "fp8_e4m3",
++        "qscheme": "per_group",
++        "group_size": 32,
++        "scale_format": "e8m0",
++        "is_dynamic": True,
++    },
++}
++_MXFP4_MOE_SPEC = {
++    "weight": {
++        "dtype": "fp4",
++        "qscheme": "per_group",
++        "group_size": 32,
++        "scale_format": "e8m0",
++        "is_dynamic": False,
++    },
++    "input_tensors": {
++        "dtype": "fp4",
++        "qscheme": "per_group",
++        "group_size": 32,
++        "scale_format": "e8m0",
++        "is_dynamic": True,
++    },
++}
++
++
++def _patch_mxfp8_moe_backend(monkeypatch) -> None:
++    monkeypatch.setattr(
++        f"{QUARK_MOE_MODULE}.select_mxfp8_moe_backend",
++        lambda *args, **kwargs: (SimpleNamespace(value="TEST_MXFP8"), object()),
+     )
+ 
+-    default_vllm_config.model_config = SimpleNamespace(dtype=torch.bfloat16)
+-    mxfp8_spec = {
+-        "weight": {
+-            "dtype": "fp8_e4m3",
+-            "qscheme": "per_group",
+-            "group_size": 32,
+-            "scale_format": "e8m0",
+-            "is_dynamic": False,
+-        },
+-        "input_tensors": {
+-            "dtype": "fp8_e4m3",
+-            "qscheme": "per_group",
+-            "group_size": 32,
+-            "scale_format": "e8m0",
+-            "is_dynamic": True,
+-        },
+-    }
++
++def test_quant_method_dispatch_mixed_mxfp4_mxfp8_experts(
++    monkeypatch, default_vllm_config
++):
++    """A per-layer ``<experts prefix>*`` entry selects MXFP8 for that layer's routed
++    experts only; other layers keep the global MXFP4, and the glob does not reach
++    the layer's shared experts (``shared_experts`` does not start with
++    ``experts``)."""
+     config = QuarkConfig(
+         {
+-            "global_quant_config": mxfp8_spec,
++            "global_quant_config": _MXFP4_MOE_SPEC,
+             "layer_type_quant_config": {},
+-            "layer_quant_config": {},
++            "layer_quant_config": {
++                "model.layers.1.block_sparse_moe.experts*": _MXFP8_MOE_SPEC,
++            },
+             "exclude": [],
+         }
+     )
+-    wk, ak, mcls = config.get_quant_method_target("experts", RoutedExperts)
+-    assert mcls is QuarkOCP_MX_MoEMethod
+-    assert wk is not None
+-    # The OCP MX MoE constructor should fail loudly for MXFP8.
+-    fake_moe_config = MagicMock()
+-    with pytest.raises(ValueError, match="MXFP8 experts are not supported"):
+-        QuarkOCP_MX_MoEMethod(fake_moe_config, wk, ak)
++    targets = {
++        layer: config.get_quant_method_target(
++            f"model.layers.{layer}.block_sparse_moe.experts", RoutedExperts
++        )[2]
++        for layer in (0, 1, 10, 11)
++    }
++    assert targets == {
++        0: QuarkOCP_MX_MoEMethod,
++        1: QuarkW8A8Mxfp8MoEMethod,
++        10: QuarkOCP_MX_MoEMethod,
++        11: QuarkOCP_MX_MoEMethod,
++    }
++    assert (
++        config.get_layer_quant_config_from_name(
++            "model.layers.1.block_sparse_moe.shared_experts.down_proj"
++        )
++        is None
++    )
++
++
++def test_quark_w8a8_mxfp8_moe_weight_shapes(monkeypatch):
++    """The parameters match the checkpoint layout: E4M3 ``[E, rows, cols]`` and
++    uint8 E8M0 ``[E, rows, cols / 32]``, sharded as block scales."""
++    _patch_mxfp8_moe_backend(monkeypatch)
++    method = QuarkW8A8Mxfp8MoEMethod(
++        _make_test_moe_config(), kMxfp8Static, kMxfp8Dynamic
++    )
++    assert method.weight_block_size == [1, 32]
++    layer = torch.nn.Module()
++    method.create_weights(
++        layer,
++        num_experts=9,
++        hidden_size=256,
++        intermediate_size_per_partition=64,
++        params_dtype=torch.bfloat16,
++        weight_loader=lambda *args, **kwargs: None,
++    )
++    expected = {
++        "w13_weight": ((9, 128, 256), torch.float8_e4m3fn),
++        "w2_weight": ((9, 256, 64), torch.float8_e4m3fn),
++        "w13_weight_scale": ((9, 128, 8), torch.uint8),
++        "w2_weight_scale": ((9, 256, 2), torch.uint8),
++    }
++    for name, (shape, dtype) in expected.items():
++        param = getattr(layer, name)
++        assert tuple(param.shape) == shape, name
++        assert param.dtype == dtype, name
++        assert param.quant_method == FusedMoeWeightScaleSupported.BLOCK.value
++    assert layer.w13_input_scale is None and layer.w2_input_scale is None
++
++    with pytest.raises(ValueError, match="divisible by 32"):
++        method.create_weights(
++            torch.nn.Module(),
++            num_experts=9,
++            hidden_size=256,
++            intermediate_size_per_partition=48,
++            params_dtype=torch.bfloat16,
++        )
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -1182,6 +1315,13 @@ def __init__(self):
+                 lambda *args, **kwargs: (object(), object()),
+             )
+ 
++        # The MXFP8 method logs the backend it selected, so give it a named one.
++        monkeypatch.setattr(
++            "vllm.model_executor.layers.quantization.quark.quark_moe."
++            "select_mxfp8_moe_backend",
++            lambda *args, **kwargs: (SimpleNamespace(value="TEST_MXFP8"), object()),
++        )
++
+         # AssertionError: W4A8 FP8 MoE requires ROCm AITER fused MoE support
+         monkeypatch.setattr(
+             "vllm.model_executor.layers.quantization.quark.quark_moe."
+diff --git a/vllm/model_executor/layers/quantization/quark/quark_moe.py b/vllm/model_executor/layers/quantization/quark/quark_moe.py
+index d69186f0ada2..a17f7b28da87 100644
+--- a/vllm/model_executor/layers/quantization/quark/quark_moe.py
++++ b/vllm/model_executor/layers/quantization/quark/quark_moe.py
+@@ -56,6 +56,9 @@
+     mxfp4_round_up_hidden_size_and_intermediate_size,
+     select_mxfp4_moe_backend,
+ )
++from vllm.model_executor.layers.fused_moe.oracle.mxfp8 import (
++    select_mxfp8_moe_backend,
++)
+ from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
+     convert_to_nvfp4_moe_kernel_format,
+     make_nvfp4_moe_kernel,
+@@ -69,6 +72,11 @@
+ from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+     validate_fp8_block_shape_moe,
+ )
++from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
++    MXFP8_BLOCK_SIZE,
++    MXFP8_SCALE_DTYPE,
++    MXFP8_VALUE_DTYPE,
++)
+ from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import (
+     dequantize_nvfp4_moe_weights,
+ )
+@@ -77,6 +85,7 @@
+     _WEIGHT_QUANT_KEY_MAP,
+     OCP_MX_BLOCK_SIZE,
+     OCP_MX_Scheme,
++    ocp_mx_weight_dtype_and_rows,
+ )
+ from vllm.model_executor.layers.quantization.utils.quant_utils import (
+     GroupShape,
+@@ -100,6 +109,13 @@
+     kInt8StaticTensorAsym,
+     kInt8StaticTensorSym,
+     kMxfp4Dynamic,
++    kMxfp4Static,
++    kMxfp6E2M3Dynamic,
++    kMxfp6E2M3Static,
++    kMxfp6E3M2Dynamic,
++    kMxfp6E3M2Static,
++    kMxfp8Dynamic,
++    kMxfp8Static,
+     kNvfp4Dynamic,
+     kNvfp4Static,
+ )
+@@ -121,6 +137,7 @@
+     "QuarkW4A16Int4MoEMethod",
+     "QuarkW8A8Fp8MoEMethod",
+     "QuarkOCP_MX_MoEMethod",
++    "QuarkW8A8Mxfp8MoEMethod",
+     "QuarkNvfp4MoEMethod",
+ ]
+ 
+@@ -205,6 +222,21 @@ def get_moe_method_target(
+         if match := quant_config._is_w_ocp_mx_a_x(
+             weight_config, input_config, allow_static_fp8=True
+         ):
++            if match.weight_quant_key == kMxfp8Static:
++                # MXFP8 experts run through the FP8 MoE kernels (AITER_MXFP8 on
++                # gfx950), not the MXFP4/MXFP6 OCP MX path.
++                normalized = ocp_mx_weight_dtype_and_rows(weight_config)
++                if normalized is None or normalized[1] != 1:
++                    raise NotImplementedError(
++                        "Quark MXFP8 MoE experts support only the 1-D per_group "
++                        "(group_size=32, e8m0) weight spelling, got "
++                        f"{weight_config} for {layer_name}"
++                    )
++                return (
++                    match.weight_quant_key,
++                    match.activation_quant_key,
++                    QuarkW8A8Mxfp8MoEMethod,
++                )
+             return (
+                 match.weight_quant_key,
+                 match.activation_quant_key,
+@@ -246,6 +278,10 @@ def get_moe_method(
+             return QuarkOCP_MX_MoEMethod(
+                 module.moe_config, weight_quant_key, activation_quant_key
+             )
++        elif method_cls is QuarkW8A8Mxfp8MoEMethod:
++            return QuarkW8A8Mxfp8MoEMethod(
++                module.moe_config, weight_quant_key, activation_quant_key
++            )
+         elif method_cls is QuarkW8A8Int8MoEMethod:
+             return QuarkW8A8Int8MoEMethod(
+                 module.moe_config, weight_quant_key, activation_quant_key
+@@ -1527,13 +1563,21 @@ def apply(
+ 
+ 
+ class QuarkOCP_MX_MoEMethod(QuarkMoEMethod):
++    # MXFP8 experts are handled by QuarkW8A8Mxfp8MoEMethod; this path only
++    # implements the packed MXFP4 / MXFP6 elements.
+     supported_activation_quant_keys = [
+-        *_ACTIVATION_QUANT_KEY_MAP.values(),
++        kMxfp4Dynamic,
++        kMxfp6E3M2Dynamic,
++        kMxfp6E2M3Dynamic,
+         kFp8DynamicTensorSym,
+         kFp8StaticTensorSym,
+         None,
+     ]
+-    supported_weight_quant_keys = [*_WEIGHT_QUANT_KEY_MAP.values()]
++    supported_weight_quant_keys = [
++        kMxfp4Static,
++        kMxfp6E3M2Static,
++        kMxfp6E2M3Static,
++    ]
+ 
+     def __init__(
+         self,
+@@ -1566,9 +1610,7 @@ def __init__(
+             raise ValueError(
+                 f"Unsupported OCP MX dtype combination for MoE: "
+                 f"input_dtype={self.input_dtype}, weight_dtype={self.weight_dtype}. "
+-                f"MXFP8 experts are not supported through the MoE path; only "
+-                f"the linear path handles MXFP8. Supported MoE weight dtypes "
+-                f"are mxfp4, mxfp6_e3m2, and mxfp6_e2m3."
++                f"Supported MoE weight dtypes are mxfp4, mxfp6_e3m2, and mxfp6_e2m3."
+             )
+ 
+         # TODO(bowenbao): refactor and introduce backends for other OCP MX schemes,
+@@ -1965,6 +2007,190 @@ def apply_monolithic(
+         )
+ 
+ 
++class QuarkW8A8Mxfp8MoEMethod(QuarkMoEMethod):
++    """Quark OCP MX MXFP8 (W8A8) experts.
++
++    FP8 E4M3 weights with E8M0 uint8 scales per 1x32 block (Quark ``fp8_e4m3``
++    ``per_group`` ``group_size=32`` ``scale_format=e8m0``), and activations
++    dynamically quantized to MXFP8. The stored layout is the one the online,
++    ModelOpt and compressed-tensors MXFP8 MoE methods produce or load
++    (``[E, rows, cols]`` E4M3, ``[E, rows, cols / 32]`` uint8), and the weights go
++    through the same backend selection, kernel-format conversion and kernel
++    (``AITER_MXFP8`` on gfx950).
++    """
++
++    supported_activation_quant_keys = [kMxfp8Dynamic]
++    supported_weight_quant_keys = [kMxfp8Static]
++
++    def __init__(
++        self,
++        moe: FusedMoEConfig,
++        weight_quant_key: QuantKey,
++        activation_quant_key: QuantKey | None,
++    ):
++        super().__init__(moe, weight_quant_key, activation_quant_key)
++        if self.has_bias:
++            raise NotImplementedError("Quark MXFP8 MoE does not support biases.")
++        self.weight_block_size = [1, MXFP8_BLOCK_SIZE]
++        self.mxfp8_backend, self.experts_cls = select_mxfp8_moe_backend(config=self.moe)
++        logger.info_once(
++            "Using %s backend for Quark MXFP8 (W8A8) MoE.", self.mxfp8_backend.value
++        )
++
++    def create_weights(
++        self,
++        layer: RoutedExperts,
++        num_experts: int,
++        hidden_size: int,
++        intermediate_size_per_partition: int,
++        params_dtype: torch.dtype,
++        **extra_weight_attrs,
++    ):
++        if (
++            hidden_size % MXFP8_BLOCK_SIZE != 0
++            or intermediate_size_per_partition % MXFP8_BLOCK_SIZE != 0
++        ):
++            raise ValueError(
++                "Quark MXFP8 MoE requires hidden_size and "
++                f"intermediate_size_per_partition divisible by {MXFP8_BLOCK_SIZE}, "
++                f"got {hidden_size} and {intermediate_size_per_partition}."
++            )
++        layer.num_experts = num_experts
++        layer.orig_dtype = params_dtype
++        w13_rows = self.moe.w13_num_shards * intermediate_size_per_partition
++        # The scales are sharded with their weights along both dims (one scale
++        # per 32 input elements), like the OCP MX block scales.
++        extra_weight_attrs.update(
++            {"quant_method": FusedMoeWeightScaleSupported.BLOCK.value}
++        )
++        shapes = {
++            "w13_weight": ((num_experts, w13_rows, hidden_size), MXFP8_VALUE_DTYPE),
++            "w2_weight": (
++                (num_experts, hidden_size, intermediate_size_per_partition),
++                MXFP8_VALUE_DTYPE,
++            ),
++            "w13_weight_scale": (
++                (num_experts, w13_rows, hidden_size // MXFP8_BLOCK_SIZE),
++                MXFP8_SCALE_DTYPE,
++            ),
++            "w2_weight_scale": (
++                (
++                    num_experts,
++                    hidden_size,
++                    intermediate_size_per_partition // MXFP8_BLOCK_SIZE,
++                ),
++                MXFP8_SCALE_DTYPE,
++            ),
++        }
++        for name, (shape, dtype) in shapes.items():
++            param = torch.nn.Parameter(
++                torch.empty(shape, dtype=dtype), requires_grad=False
++            )
++            layer.register_parameter(name, param)
++            set_weight_attrs(param, extra_weight_attrs)
++
++        layer.w13_input_scale = None
++        layer.w2_input_scale = None
++
++    def process_weights_after_loading(self, layer: RoutedExperts) -> None:
++        layer.weight_block_size = self.weight_block_size
++        w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
++            fp8_backend=self.mxfp8_backend,
++            layer=layer,
++            w13=layer.w13_weight,
++            w2=layer.w2_weight,
++            w13_scale=layer.w13_weight_scale,
++            w2_scale=layer.w2_weight_scale,
++            w13_input_scale=None,
++            w2_input_scale=None,
++        )
++        replace_parameter(layer, "w13_weight", w13)
++        replace_parameter(layer, "w2_weight", w2)
++        replace_parameter(layer, "w13_weight_scale", w13_scale)
++        replace_parameter(layer, "w2_weight_scale", w2_scale)
++
++        self.moe_quant_config = self.get_fused_moe_quant_config(layer)
++        assert self.moe_quant_config is not None
++        assert self.experts_cls is not None
++        self.moe_kernel = make_fp8_moe_kernel(
++            moe_quant_config=self.moe_quant_config,
++            moe_config=self.moe,
++            fp8_backend=self.mxfp8_backend,
++            experts_cls=self.experts_cls,
++            routing_tables=layer._expert_routing_tables(),
++        )
++
++    def get_fused_moe_quant_config(
++        self, layer: RoutedExperts
++    ) -> FusedMoEQuantConfig | None:
++        return make_fp8_moe_quant_config(
++            fp8_backend=self.mxfp8_backend,
++            w1_scale=layer.w13_weight_scale,
++            w2_scale=layer.w2_weight_scale,
++            a1_scale=None,
++            a2_scale=None,
++            block_shape=self.weight_block_size,
++            swiglu_limit=getattr(layer, "swiglu_limit", None),
++            gemm1_alpha=getattr(layer, "swiglu_alpha", None),
++            gemm1_beta=getattr(layer, "swiglu_beta", None),
++            layer=layer,
++        )
++
++    @property
++    def supports_eplb(self) -> bool:
++        return True
++
++    def apply(
++        self,
++        layer: RoutedExperts,
++        x: torch.Tensor,
++        topk_weights: torch.Tensor,
++        topk_ids: torch.Tensor,
++        shared_experts: SharedExperts | None,
++        shared_experts_input: torch.Tensor | None,
++    ) -> torch.Tensor | UnfinalizedMoEOutput:
++        assert not self.is_monolithic
++        assert self.moe_kernel is not None
++        return self.moe_kernel.apply(
++            x,
++            layer.w13_weight,
++            layer.w2_weight,
++            topk_weights,
++            topk_ids,
++            activation=layer.activation,
++            global_num_experts=layer.global_num_experts,
++            expert_map=layer.expert_map,
++            apply_router_weight_on_input=layer.apply_router_weight_on_input,
++            shared_experts=shared_experts,
++            shared_experts_input=shared_experts_input,
++        )
++
++    def apply_monolithic(
++        self,
++        layer: RoutedExperts,
++        x: torch.Tensor,
++        router_logits: torch.Tensor,
++        input_ids: torch.Tensor | None = None,
++    ) -> torch.Tensor | UnfinalizedMoEOutput:
++        assert self.is_monolithic
++        assert self.moe_kernel is not None
++        return self.moe_kernel.apply_monolithic(
++            x,
++            layer.w13_weight,
++            layer.w2_weight,
++            router_logits,
++            activation=layer.activation,
++            global_num_experts=layer.global_num_experts,
++            expert_map=layer.expert_map,
++            apply_router_weight_on_input=layer.apply_router_weight_on_input,
++            num_expert_group=layer.num_expert_group,
++            topk_group=layer.topk_group,
++            e_score_correction_bias=layer.e_score_correction_bias,
++            routed_scaling_factor=layer.routed_scaling_factor,
++            routing_sink=layer.routing_sink,
++        )
++
++
+ class QuarkNvfp4MoEMethod(QuarkMoEMethod):
+     supported_activation_quant_keys = [kNvfp4Dynamic]
+     supported_weight_quant_keys = [kNvfp4Static]

@@ -1,0 +1,45 @@
+{
+  "pier": {
+    "version": "0.3.1",
+    "commit": "b26211ed2bbee6d145f6b8c5b80e39f18b296f08",
+    "source": "https://github.com/datacurve-ai/pier"
+  },
+  "deep_swe": {
+    "commit": "0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea",
+    "source": "https://github.com/datacurve-ai/deep-swe"
+  },
+  "mini_swe_agent": "2.4.5",
+  "agent_litellm": "1.108.3",
+  "agent_mcp": "2.3.0",
+  "vllm": "0.32.0rc1.dev364+g8d0f05a0c.d20261023.rocm100",
+  "torch": "2.13.0+rocm10.0.0",
+  "triton": "3.8.0+git669b31ac",
+  "uv": "0.13.5",
+  "historical_image": "vllm/vllm-openai-rocm:minimax-m31-flash",
+  "base_repo_digest": "vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c439231f6475f74569",
+  "historical_image_id": "sha256:1d3dac5bca7b1b80983ec0bf4675d1b9feff74a1d683838ade67d06d35c26877",
+  "patch_sha256": {
+    "037-pier-mini-local-provider-allowlist.patch": "ee7188a4afeeb7ef7f6bb936119ab114f6b22a14771c150e9ab3e24847585362",
+    "004-vllm-pr63125-quark-mxfp8.patch": "63eb58ed5be1b8c59911553da78e20932b01fb94e3da62db8c98b2163c46377c",
+    "036-pier-local-provider-subnets.patch": "a514ea7f5b9f2ea3e701cdaad8ddceb6d8d274fefcbab8d1e8cd3bfac631f7b0"
+  },
+  "quark_moe_runtime_sha256": "3f3397675af6596964daf974ee3b22d10996d0ebc70a4c3b30cad0e78f8ac830",
+  "reproduction_base_images": {
+    "python": "python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70",
+    "docker_cli": "docker:28.3.2-cli@sha256:a07d3db92e0ca51de11fd47c9b45257a7c3d64a5b6dae2393382a86a100f42a5",
+    "docker_dind": "docker:28.3.2-dind@sha256:44383404ebf0c36243f5969f0dddd23c204ea3bb185e7473a4141f6ccfd07b53",
+    "uv": "ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff"
+  },
+  "models": {
+    "baseline": {
+      "repo": "amd/MiniMax-M3.1-Flash-Quark-MXFP8",
+      "url": "https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP8",
+      "format": "MXFP8"
+    },
+    "comparison": {
+      "repo": "amd/MiniMax-M3.1-Flash-Quark-MXFP4",
+      "url": "https://huggingface.co/amd/MiniMax-M3.1-Flash-Quark-MXFP4",
+      "format": "MXFP4"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+diff --git a/src/pier/agents/installed/mini_swe_agent.py b/src/pier/agents/installed/mini_swe_agent.py
+--- a/src/pier/agents/installed/mini_swe_agent.py
++++ b/src/pier/agents/installed/mini_swe_agent.py
+@@ -737,7 +737,7 @@
+ 
+         return allowlist_from_urls(
+             urls,
+-            default_domains=self._DEFAULT_PROVIDER_DOMAINS.get(provider or "", []),
++            default_domains=[] if urls else self._DEFAULT_PROVIDER_DOMAINS.get(provider or "", []),
+         )
+ 
+     @property

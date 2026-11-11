@@ -1,0 +1,57 @@
+diff --git a/src/pier/agents/installed/codex.py b/src/pier/agents/installed/codex.py
+index 7b529d6..aa57f21 100644
+--- a/src/pier/agents/installed/codex.py
++++ b/src/pier/agents/installed/codex.py
+@@ -110,7 +110,7 @@ class Codex(BaseInstalledAgent):
+                 parsed = {}
+             urls.extend(collect_url_values(parsed))
+ 
+-        return allowlist_from_urls(urls, default_domains=["api.openai.com"])
++        return allowlist_from_urls(urls, default_domains=[] if urls else ["api.openai.com"])
+ 
+     def install_spec(self) -> AgentInstallSpec:
+         version_spec = f"@{self._version}" if self._version else "@latest"
+diff --git a/src/pier/environments/agent_setup.py b/src/pier/environments/agent_setup.py
+index 6f1181b..b5bdb8e 100644
+--- a/src/pier/environments/agent_setup.py
++++ b/src/pier/environments/agent_setup.py
+@@ -1,6 +1,9 @@
+ from __future__ import annotations
+ 
+ import json
++import fcntl
++import ipaddress
++import os
+ import secrets
+ import shlex
+ from pathlib import Path
+@@ -193,6 +196,29 @@ def write_docker_proxy_compose(
+             },
+         },
+     }
++    if pool_name := os.environ.get("PIER_DOCKER_SUBNET_POOL"):
++        pool = ipaddress.ip_network(pool_name)
++        state_path = Path(os.environ.get("PIER_DOCKER_SUBNET_STATE", "/tmp/pier-subnets.json"))
++        state_path.parent.mkdir(parents=True, exist_ok=True)
++        with state_path.open("a+") as state:
++            fcntl.flock(state, fcntl.LOCK_EX)
++            state.seek(0)
++            saved = state.read()
++            allocations = json.loads(saved) if saved else {"pool": pool_name, "next": 0}
++            if allocations["pool"] != pool_name:
++                raise ValueError("Subnet state pool does not match requested pool")
++            index = allocations["next"]
++            if (index + 2) * 8 > pool.num_addresses:
++                raise ValueError("Pier subnet pool exhausted")
++            networks = [str(ipaddress.ip_network((int(pool.network_address) + (index + offset) * 8, 29))) for offset in (0, 1)]
++            allocations["next"] = index + 2
++            state.seek(0)
++            state.truncate()
++            json.dump(allocations, state)
++            state.flush()
++            os.fsync(state.fileno())
++        compose["networks"]["pier-egress-internal"]["ipam"] = {"config": [{"subnet": networks[0]}]}
++        compose["networks"]["default"] = {"ipam": {"config": [{"subnet": networks[1]}]}}
+     path.parent.mkdir(parents=True, exist_ok=True)
+     path.write_text(json.dumps(compose, indent=2))
+     return path
