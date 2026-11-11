@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /opt/pier-venv/bin/activate
 : "${REPO_DIR:?}" "${RUN_REL:?}" "${MODEL_PATH:?}" "${MODEL_FORMAT:?}" "${OPENAI_BASE_URL:?}"
 cd "$REPO_DIR/$RUN_REL"
 exec pier run \

@@ -2,7 +2,8 @@
 
 2026-11-11完成以下检查：
 
-- 三个Dockerfile实际构建成功。
+- vLLM/Pier合并镜像及sandbox镜像实际构建成功。
+- 合并镜像CPU冒烟检查通过：Pier 0.3.1可运行，vLLM/Torch版本保持固定，激活和退出Pier venv正常。
 - Pier原生CLI和固定113题源码检查通过。
 - vLLM补丁后的源码SHA256与目标值一致。
 - 汇总脚本测试通过，覆盖去重、缺失reward和每题三个attempt的平均计分。

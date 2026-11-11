@@ -13,7 +13,7 @@
 | DeepSWE | `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`，113题 |
 | mini-SWE-agent | 2.4.5 |
 | agent LiteLLM / MCP | 1.108.3 / 2.3.0 |
-| Pier依赖 | 上游固定commit的 `uv.lock` |
+| Pier依赖 | vLLM镜像内的独立 `/opt/pier-venv`，使用上游固定commit的 `uv.lock` |
 | Docker / Compose / UV | 28.3.2 / 2.38.2 / 0.13.5 |
 
 AITER随vLLM基础镜像固定。使用相同镜像digest，无需单独安装或指定AITER commit。
@@ -46,6 +46,10 @@ Dockerfile应用 `quark_moe.py` 的运行时改动，并校验源码SHA256：
 [003-pier-mini-provider-allowlist.patch](../patches/003-pier-mini-provider-allowlist.patch)让Pier的mini-SWE接入按显式模型API地址生成白名单。
 
 002/003修改Pier的基础设施接入代码，不修改mini-SWE解题逻辑、任务或verifier。
+
+## 部署
+
+`Dockerfile.vllm`同时安装vLLM和Pier。模型服务使用原有Python环境；评估脚本激活 `/opt/pier-venv`。`Dockerfile.sandbox`提供独立Docker daemon，任务镜像、构建缓存及容器数据持久化到 `SANDBOX_DATA_DIR`。
 
 ## 沙箱配置
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /opt/pier-venv/bin/activate
 : "${REPO_DIR:?}" "${RUN_REL:?}" "${MODEL_FORMAT:?}"
 run_dir="$REPO_DIR/$RUN_REL"
 # Require a fresh run; never overwrite prior trials or interrupted jobs.

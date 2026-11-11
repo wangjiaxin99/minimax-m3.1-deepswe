@@ -27,38 +27,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-  pier:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.pier
-    image: minimax-deepswe-pier:0.3.1
-    init: true
-    working_dir: ${REPO_DIR}
-    environment:
-      REPO_DIR: ${REPO_DIR}
-      MODEL_PATH: ${MODEL_PATH:?Set MODEL_PATH in .env}
-      MODEL_FORMAT: ${MODEL_FORMAT:-mxfp8}
-      RUN_REL: ${RUN_REL:?Set a fresh RUN_REL in .env}
-      DOCKER_HOST: unix://${REPO_DIR}/state/docker.sock
-      TASKS_DIR: ${REPO_DIR}/vendor/deep-swe/tasks
-      PIER_DOCKER_SUBNET_POOL: ${TASK_SUBNET_POOL:-198.18.0.0/15}
-      PIER_DOCKER_SUBNET_STATE: ${REPO_DIR}/state/subnets.json
-      OPENAI_BASE_URL: http://${SANDBOX_IP:-172.30.0.2}:443/v1
-      OPENAI_API_KEY: EMPTY
-    volumes:
-      - ${REPO_DIR}:${REPO_DIR}
-    depends_on:
-      sandbox:
-        condition: service_healthy
-    networks: [control]
   vllm:
-    profiles: [model]
     build:
       context: .
       dockerfile: docker/Dockerfile.vllm
       args:
         VLLM_BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai-rocm@sha256:ae8681212aa5291d8c27f06e90016435e3fca144a68fd5c439231f6475f74569}
-    image: minimax-deepswe-vllm:pr63125
+    image: minimax-deepswe-vllm-pier:pr63125
     init: true
     ipc: host
     devices:
@@ -70,13 +45,23 @@ services:
     group_add: [video]
     working_dir: ${REPO_DIR}
     environment:
-      MODEL_PATH: ${MODEL_PATH}
+      MODEL_PATH: ${MODEL_PATH:?Set MODEL_PATH in .env}
+      MODEL_FORMAT: ${MODEL_FORMAT:-mxfp8}
+      DOCKER_HOST: unix://${REPO_DIR}/state/docker.sock
+      TASKS_DIR: ${REPO_DIR}/vendor/deep-swe/tasks
+      PIER_DOCKER_SUBNET_POOL: ${TASK_SUBNET_POOL:-198.18.0.0/15}
+      PIER_DOCKER_SUBNET_STATE: ${REPO_DIR}/state/subnets.json
+      OPENAI_BASE_URL: http://${SANDBOX_IP:-172.30.0.2}:443/v1
+      OPENAI_API_KEY: EMPTY
       HIP_VISIBLE_DEVICES: ${GPU_IDS:-4,5,6,7}
       REPO_DIR: ${REPO_DIR}
-      RUN_REL: ${RUN_REL}
+      RUN_REL: ${RUN_REL:?Set a fresh RUN_REL in .env}
     volumes:
       - ${REPO_DIR}:${REPO_DIR}
       - ${MODEL_PATH}:${MODEL_PATH}:ro
+    depends_on:
+      sandbox:
+        condition: service_healthy
     ports:
       - ${SERVER_PORT:-8201}:8000
     command:

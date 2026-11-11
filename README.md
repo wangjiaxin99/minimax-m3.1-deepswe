@@ -41,25 +41,28 @@
 
 ## 环境方案：Dockerfile + Compose
 
-采用三个组件，分开固定推理服务与评估框架依赖：
+部署两个长期运行容器：vLLM容器同时运行模型服务和Pier，sandbox容器提供专用Docker daemon。Pier使用独立venv。
 
 ```mermaid
 flowchart LR
-    P[Pier 控制容器] -->|专用 Unix socket| D[Docker 沙箱 daemon]
+    subgraph engine["vLLM 容器"]
+      P["Pier / 独立 venv"]
+      S["vLLM API / 4张GPU"]
+    end
+    P -->|专用 Unix socket| D[Docker 沙箱 daemon]
     D --> A[每题 agent 容器\nmini-SWE-agent]
     D --> V[每题独立 verifier 容器]
     A --> Q[Pier 白名单代理]
     Q --> G[沙箱内 HTTP 443 转发]
-    G --> S[vLLM API\nTP4 / AMD GPU]
+    G --> S
     A --> F[model.patch]
     F --> V
     V --> R[reward.json / 测试日志]
 ```
 
-- [Dockerfile.pier](docker/Dockerfile.pier)：Python 3.12.15、固定 Pier commit、002/003 补丁，按上游 `uv.lock` 执行 `uv sync --frozen --no-dev`。Pier 安装在 `/opt/pier-venv`，不进入 vLLM Python 环境。
-- [Dockerfile.vllm](docker/Dockerfile.vllm)：以固定ROCm镜像digest为基础，应用001的 `quark_moe.py` 运行时改动；校验补丁前后 SHA256，不整包升级 vLLM。
-- [Dockerfile.sandbox](docker/Dockerfile.sandbox)：独立 Docker 28.3.2 daemon、持久化数据目录及模型 HTTP 转发；daemon 启用 `--init`，回收任务容器的孤儿子进程。
-- [compose.yaml](compose.yaml)：配置 GPU、挂载、端口和独立网络。任务容器看不到控制器中的测试文件；verifier 在独立环境中运行。
+- [Dockerfile.vllm](docker/Dockerfile.vllm)：固定ROCm基础镜像，应用001 MXFP8补丁，并在 `/opt/pier-venv` 安装Pier及002/003补丁。vLLM使用原有Python环境，评估脚本激活Pier的独立venv。
+- [Dockerfile.sandbox](docker/Dockerfile.sandbox)：提供Docker daemon、init、模型HTTP转发及DNS转发。负责创建任务容器，管理任务、mini-SWE及verifier镜像。
+- [compose.yaml](compose.yaml)：配置GPU、挂载、端口及网络。沙箱镜像和构建缓存存放在 `SANDBOX_DATA_DIR`，挂载到daemon容器的 `/var/lib/docker`。每道题独立运行agent和verifier容器。
 
 构建与检查结果见 [验证记录](docs/validation.md)。
 
@@ -108,28 +111,26 @@ runs/vllm-run/<MMDD>_<NN>_<format>_deepswe_mini_c64_out64k_a3_nodelete/
 
 ```bash
 bash scripts/fetch_tasks.sh
-docker compose --profile model config --quiet
-docker compose build pier sandbox
-docker compose --profile model build vllm
+docker compose config --quiet
+docker compose build
 ```
 
 任务固定为 commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`，脚本核对 113 个 `task.toml` 及干净工作树。构建需要网络访问 GitHub、PyPI 和镜像仓库。基础 ROCm 镜像无法拉取时，见 [基础镜像保留与迁移](docs/environment-and-patches.md)。
 
-## 3. 启动 vLLM 和评估控制器
+## 3. 启动 vLLM / Pier 和沙箱
 
 先核对 GPU/端口未被占用，再执行：
 
 ```bash
-docker compose --profile model up -d vllm
-docker compose up -d sandbox pier
+docker compose up -d
 docker compose logs --tail 50 vllm
-docker compose exec pier docker info
-docker compose exec pier python scripts/preflight.py --output state/preflight.json
+docker compose exec vllm docker info
+docker compose exec vllm python scripts/preflight.py --output state/preflight.json
 ```
 
 preflight 检查 `/health`、模型 ID，并执行 100-token 固定问题冒烟；原始回答写入 `state/preflight.json` 并展示，不纳入评估得分。模型加载期间可能尚未健康，等待服务就绪后执行。
 
-如果复用已有模型服务，省略启动 `vllm` 的命令，保证已有服务在 `SERVER_PORT` 可达，且模型 ID 与 `MODEL_PATH` 一致。参数必须使用下表配置，并在自己的run中记录服务配置和日志。
+模型服务参数如下：
 
 | 服务参数 | 配置 |
 |---|---|
@@ -144,9 +145,26 @@ preflight 检查 `/health`、模型 ID，并执行 100-token 固定问题冒烟�
 
 ## 4. 提前拉取任务镜像
 
+**请为 `SANDBOX_DATA_DIR` 单独预留至少500 GiB可用空间，建议1 TiB。此预算不包含模型权重。** 准备阶段的镜像缓存快照约180 GB；完整113题还需要mini-SWE安装层、verifier镜像和构建缓存。三次attempt可复用镜像，无需按题数简单乘三，但构建缓存会随运行增长。
+
+| 存储内容 | 建议 |
+|---|---|
+| 任务镜像、agent/verifier镜像、Docker构建缓存 | 至少500 GiB可用，建议1 TiB，使用专用大盘目录 |
+| 模型权重 | 单独预留；MXFP8 checkpoint约416 GiB |
+| 逐题轨迹、patch和测试日志 | 放在仓库的run目录中，另外预留空间 |
+
+运行前及运行中检查磁盘和Docker占用：
+
 ```bash
-docker compose exec pier python scripts/prefetch_images.py
-docker compose exec pier docker system df
+docker compose exec sandbox df -h /var/lib/docker
+docker compose exec vllm docker system df
+```
+
+`--no-delete`保留镜像缓存；上述预留量是容量建议，实际占用以检查结果为准。
+
+```bash
+docker compose exec vllm python scripts/prefetch_images.py
+docker compose exec vllm docker system df
 ```
 
 提前拉取题目声明的预构建镜像。首次运行还会构建mini-SWE、代理和verifier镜像；后续运行复用缓存。
@@ -156,22 +174,22 @@ docker compose exec pier docker system df
 ## 5. 单个 job 全量运行三次 attempt
 
 ```bash
-docker compose exec -d pier bash scripts/run_eval.sh
+docker compose exec -d vllm bash scripts/run_eval.sh
 ```
 
-后台程序在控制容器中运行，退出终端不会停止任务；停止/删除控制容器会中断。脚本遇到非零退出会停止运行，并保留已有结果供检查。不要对中断目录直接重跑覆盖，另设新的 `RUN_REL` 或按原生恢复流程处理并记录。
+后台程序在vLLM容器中运行，退出终端不会停止任务；停止/删除vLLM容器会中断。脚本遇到非零退出会停止运行，并保留已有结果供检查。不要对中断目录直接重跑覆盖，另设新的 `RUN_REL` 或按原生恢复流程处理并记录。
 
 实时日志和进展：
 
 ```bash
-docker compose exec pier bash -c 'tail -f "$REPO_DIR/$RUN_REL/logs/eval_deepswe.log"'
-docker compose exec pier bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --allow-incomplete'
+docker compose exec vllm bash -c 'tail -f "$REPO_DIR/$RUN_REL/logs/eval_deepswe.log"'
+docker compose exec vllm bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --allow-incomplete'
 ```
 
 未完成的 job 打印的是固定339分母下的进度，不是最终准确率。全部完成后：
 
 ```bash
-docker compose exec pier bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --output "$REPO_DIR/$RUN_REL/summary.json"'
+docker compose exec vllm bash -c 'python scripts/summarize.py --manifest "$REPO_DIR/$RUN_REL/manifest.json" --output "$REPO_DIR/$RUN_REL/summary.json"'
 ```
 
 完整原生评估命令在 [eval_deepswe.sh](scripts/eval_deepswe.sh)，配置如下：
@@ -216,19 +234,18 @@ logs/deepswe/mini_<format>_attempts3/<trial>/
 MXFP8 的339个trial完成后，停止本仓库的模型服务：
 
 ```bash
-docker compose --profile model stop vllm
+docker compose stop vllm
 ```
 
-将 `.env` 的 `MODEL_FORMAT` 改为 `mxfp4`、`MODEL_PATH` 改为 MXFP4 checkpoint，设置新的 `RUN_REL`，然后重新创建服务与控制器，让环境变量生效：
+将 `.env` 的 `MODEL_FORMAT` 改为 `mxfp4`、`MODEL_PATH` 改为 MXFP4 checkpoint，设置新的 `RUN_REL`，然后重新创建vLLM容器，让模型配置和Pier评估配置生效：
 
 ```bash
-docker compose --profile model up -d --force-recreate vllm
-docker compose up -d --force-recreate pier
-docker compose exec pier python scripts/preflight.py --output state/preflight-mxfp4.json
-docker compose exec -d pier bash scripts/run_eval.sh
+docker compose up -d --force-recreate vllm
+docker compose exec vllm python scripts/preflight.py --output state/preflight-mxfp4.json
+docker compose exec -d vllm bash scripts/run_eval.sh
 ```
 
-沙箱 daemon 可保留以复用镜像缓存。中止评估可停止 `pier`，之后检查专用 daemon 中遗留的任务容器；不要把中断结果报为完成。整个部署停止使用 `docker compose --profile model down`；该命令保留 bind-mounted 镜像数据和运行日志。不要对宿主机共享 daemon 或其他实验执行全局 prune。
+沙箱 daemon 可保留以复用镜像缓存。停止 `vllm` 会同时停止模型服务和Pier评估，之后检查专用 daemon 中遗留的任务容器；不要把中断结果报为完成。整个部署停止使用 `docker compose down`；该命令保留 bind-mounted 镜像数据和运行日志。不要对宿主机共享 daemon 或其他实验执行全局 prune。
 
 ## 补丁与参考
 
@@ -246,7 +263,7 @@ docker compose exec -d pier bash scripts/run_eval.sh
 python3 -m unittest discover -s tests -v
 python3 scripts/check_published_data.py
 for script in scripts/*.sh docker/*.sh; do bash -n "$script"; done
-docker compose --profile model config --quiet
+docker compose config --quiet
 ```
 
 仓库代码按 Apache-2.0 提供；复制的上游补丁及其来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。下载的 DeepSWE 任务、模型及第三方镜像分别适用自身许可证。
