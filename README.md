@@ -112,14 +112,42 @@ docker compose build
 
 任务固定为 commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`，脚本核对 113 个 `task.toml` 及干净工作树。构建需要网络访问 GitHub、PyPI 和镜像仓库。基础 ROCm 镜像无法拉取时，见 [基础镜像保留与迁移](docs/environment-and-patches.md)。
 
-## 3. 启动 vLLM / Pier 和沙箱
+## 3. 启动容器并提前拉取任务镜像
 
-先核对 GPU/端口未被占用，再执行：
+**请为 `SANDBOX_DATA_DIR` 单独预留至少500 GiB可用空间，建议1 TiB。此预算不包含模型权重。** 准备阶段的镜像缓存快照约180 GB；完整113题还需要mini-SWE安装层、verifier镜像和构建缓存。三次attempt可复用镜像，无需按题数简单乘三，但构建缓存会随运行增长。
+
+| 存储内容 | 建议 |
+|---|---|
+| 任务镜像、agent/verifier镜像、Docker构建缓存 | 至少500 GiB可用，建议1 TiB，使用专用大盘目录 |
+| 模型权重 | 单独预留；MXFP8 checkpoint约416 GiB |
+| 逐题轨迹、patch和测试日志 | 放在仓库的run目录中，另外预留空间 |
+
+先核对GPU、端口和磁盘空间，再启动容器。`up -d`会等待沙箱daemon健康并启动vLLM进程，但不等待模型API就绪；可以立即拉取任务镜像，与模型加载同时进行：
 
 ```bash
 docker compose up -d
-docker compose logs --tail 50 vllm
 docker compose exec vllm docker info
+docker compose exec sandbox df -h /var/lib/docker
+docker compose exec vllm docker system df
+```
+
+`--no-delete`保留镜像缓存；上述预留量是容量建议，实际占用以检查结果为准。
+
+```bash
+docker compose exec vllm python scripts/prefetch_images.py
+docker compose exec vllm docker system df
+```
+
+预拉取脚本只读取任务配置并调用Docker daemon，不访问模型API。它提前拉取题目声明的预构建镜像；首次运行还会构建mini-SWE、代理和verifier镜像，后续运行复用缓存。
+
+任务 agent 的运行网络受 Pier 白名单控制，只开放配置的模型服务；verifier 按题目配置无网络运行。`http://...:443/v1` 使用 443 是为了符合 Pier 代理允许的端口，是普通 HTTP，非 TLS。
+
+## 4. 检查模型服务就绪
+
+任务镜像准备完成后查看模型加载日志，模型API就绪时再执行preflight：
+
+```bash
+docker compose logs --tail 50 vllm
 docker compose exec vllm python scripts/preflight.py --output state/preflight.json
 ```
 
@@ -137,34 +165,6 @@ preflight 检查 `/health`、模型 ID，并执行 100-token 固定问题冒烟�
 | 其他 | block size128，关闭hybrid KV cache manager及shared-expert fusion，开启indexer decode CP | 本次服务配置；完整命令与接口见[S6](docs/references.md#s6) |
 
 完整命令见 [server.sh](scripts/server.sh)。
-
-## 4. 提前拉取任务镜像
-
-**请为 `SANDBOX_DATA_DIR` 单独预留至少500 GiB可用空间，建议1 TiB。此预算不包含模型权重。** 准备阶段的镜像缓存快照约180 GB；完整113题还需要mini-SWE安装层、verifier镜像和构建缓存。三次attempt可复用镜像，无需按题数简单乘三，但构建缓存会随运行增长。
-
-| 存储内容 | 建议 |
-|---|---|
-| 任务镜像、agent/verifier镜像、Docker构建缓存 | 至少500 GiB可用，建议1 TiB，使用专用大盘目录 |
-| 模型权重 | 单独预留；MXFP8 checkpoint约416 GiB |
-| 逐题轨迹、patch和测试日志 | 放在仓库的run目录中，另外预留空间 |
-
-运行前及运行中检查磁盘和Docker占用：
-
-```bash
-docker compose exec sandbox df -h /var/lib/docker
-docker compose exec vllm docker system df
-```
-
-`--no-delete`保留镜像缓存；上述预留量是容量建议，实际占用以检查结果为准。
-
-```bash
-docker compose exec vllm python scripts/prefetch_images.py
-docker compose exec vllm docker system df
-```
-
-提前拉取题目声明的预构建镜像。首次运行还会构建mini-SWE、代理和verifier镜像；后续运行复用缓存。
-
-任务 agent 的运行网络受 Pier 白名单控制，只开放配置的模型服务；verifier 按题目配置无网络运行。`http://...:443/v1` 使用 443 是为了符合 Pier 代理允许的端口，是普通 HTTP，非 TLS。
 
 ## 5. 单个 job 全量运行三次 attempt
 
